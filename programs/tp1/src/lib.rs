@@ -1,8 +1,11 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer, Transfer};
-use anchor_lang::solana_program::{program::invoke, system_instruction, native_token::LAMPORTS_PER_SOL};
+use anchor_lang::solana_program::native_token::LAMPORTS_PER_SOL;
+use std::str::FromStr;
 
 declare_id!("4RgzWS9Gixt44wwULLUVw47Dixxh1ywbGkZ4D1yPVUgn");
+
+const ADMIN_PUBKEY: &str = "FwN1nDBaVhEzjnYRN537zx4hx3FgXRiGfRUKTf1ywCib";
 
 #[program]
 pub mod tp1 {
@@ -34,19 +37,18 @@ pub mod tp1 {
         let cpi_context = CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
             Transfer {
-                from: ctx.accounts.signer.to_account_info(),
-                to: ctx.accounts.vault.to_account_info(),
+                from: ctx.accounts.signer.to_account_info(), 
+                to: ctx.accounts.vault.to_account_info(),   
             },
         );
 
         let amount = (LAMPORTS_PER_SOL as f64 * 0.1) as u64;
-
         transfer(cpi_context, amount)?; 
 
         joueur.level = match joueur.xp {
-            experience if experience <= 5 => Level::Beginner,
-            experience if experience <= 35 => Level::Explorer,
-            experience if experience <= 100 => Level::Champion,
+            experience if experience < 5 => Level::Beginner,
+            experience if experience >= 5 && experience < 35 => Level::Explorer,
+            experience if experience >= 35 && experience < 100 => Level::Champion,
             _ => Level::Legend,
         };
 
@@ -54,6 +56,11 @@ pub mod tp1 {
     }
 
     pub fn withdraw_vault(ctx: Context<WithdrawVault>) -> Result<()> {
+        let admin_pubkey = Pubkey::from_str(ADMIN_PUBKEY).unwrap();
+        if ctx.accounts.admin.key() != admin_pubkey {
+            return Err(error!(ErrorCode::NonAdmin));
+        }
+
         let amount = **ctx.accounts.vault.to_account_info().lamports.borrow();
 
         let seeds = &[b"vault".as_ref(), &[ctx.bumps.vault]];
@@ -73,131 +80,53 @@ pub mod tp1 {
         Ok(())
     }
 
-    pub fn attaquer(ctx: Context<Attaquer>) -> Result<()> {
-        if !ctx.accounts.attaquant.vivant {
-            return Err(ErrorCode::JoueurMort.into());
+    pub fn battle(ctx: Context<Battle>) -> Result<()> {
+        let attacker = &mut ctx.accounts.attacker;
+        let defender = &mut ctx.accounts.defender;
+
+        if !attacker.vivant {
+            return Err(error!(ErrorCode::JoueurMort));
+        }
+        
+        if !defender.vivant {
+            return Err(error!(ErrorCode::JoueurMort));
         }
 
-        if !ctx.accounts.cible.vivant {
-            return Err(ErrorCode::JoueurMort.into());
-        }
+        if attacker.xp >= defender.xp {
 
-        let degats = 5 + (ctx.accounts.attaquant.xp / 10) as u8;
-        
-        let degats_appliques = std::cmp::min(degats, ctx.accounts.cible.pdv as u8);
-        
-        ctx.accounts.cible.pdv = ctx.accounts.cible.pdv.saturating_sub(degats_appliques as u64);
-        
-        if ctx.accounts.cible.pdv == 0 {
-            ctx.accounts.cible.vivant = false;
-            
-            ctx.accounts.attaquant.xp += 50;
+            if defender.pdv <= 50 {
+                defender.pdv = 0;
+                defender.vivant = false;
+            } else {
+                defender.pdv -= 50;
+            }
+
+            attacker.xp += 5;
         } else {
-            ctx.accounts.attaquant.xp += 5;
-        }
-        
-        Ok(())
-    }
+            if attacker.pdv <= 50 {
+                attacker.pdv = 0;
+                attacker.vivant = false;
+            } else {
+                attacker.pdv -= 50;
+            }
 
-    pub fn soigner(ctx: Context<Soigner>) -> Result<()> {
-        if !ctx.accounts.joueur.vivant {
-            return Err(ErrorCode::JoueurMort.into());
-        }
-
-        let cout_xp = 20;
-        
-        if ctx.accounts.joueur.xp < cout_xp {
-            return Err(ErrorCode::ExperienceInsuffisante.into());
+            defender.xp += 5;
         }
 
-        ctx.accounts.joueur.xp -= cout_xp;
-        
-        let soin = 20;
-        ctx.accounts.joueur.pdv = std::cmp::min(100, ctx.accounts.joueur.pdv + soin);
-        
-        Ok(())
-    }
+        attacker.level = match attacker.xp {
+            experience if experience < 5 => Level::Beginner,
+            experience if experience >= 5 && experience < 35 => Level::Explorer,
+            experience if experience >= 35 && experience < 100 => Level::Champion,
+            _ => Level::Legend,
+        };
 
-    pub fn creer_item(ctx: Context<CreerItem>, nom: String, puissance: u8, cout: u64) -> Result<()> {
-        let item = &mut ctx.accounts.item;
-        item.nom = nom;
-        item.puissance = puissance;
-        item.prix = cout;
-        item.proprietaire = ctx.accounts.authority.key();
-        item.en_vente = false;
-        
-        Ok(())
-    }
+        defender.level = match defender.xp {
+            experience if experience < 5 => Level::Beginner,
+            experience if experience >= 5 && experience < 35 => Level::Explorer,
+            experience if experience >= 35 && experience < 100 => Level::Champion,
+            _ => Level::Legend,
+        };
 
-    pub fn mettre_en_vente(ctx: Context<GererVente>, prix: u64) -> Result<()> {
-        let item = &mut ctx.accounts.item;
-        
-        if item.proprietaire != ctx.accounts.authority.key() {
-            return Err(ErrorCode::NonProprietaire.into());
-        }
-        
-        item.en_vente = true;
-        item.prix = prix;
-        
-        Ok(())
-    }
-    
-    pub fn retirer_vente(ctx: Context<GererVente>) -> Result<()> {
-        let item = &mut ctx.accounts.item;
-        
-        if item.proprietaire != ctx.accounts.authority.key() {
-            return Err(ErrorCode::NonProprietaire.into());
-        }
-        
-        item.en_vente = false;
-        
-        Ok(())
-    }
-
-    pub fn acheter_item(ctx: Context<AcheterItem>) -> Result<()> {
-        let item = &mut ctx.accounts.item;
-        
-        if !item.en_vente {
-            return Err(ErrorCode::ItemNonEnVente.into());
-        }
-        
-        let montant = item.prix;
-        
-        let transfer_instruction = system_instruction::transfer(
-            &ctx.accounts.acheteur.key(),
-            &ctx.accounts.vendeur.key(),
-            montant,
-        );
-        
-        invoke(
-            &transfer_instruction,
-            &[
-                ctx.accounts.acheteur.to_account_info(),
-                ctx.accounts.vendeur.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-        )?;
-        
-        item.proprietaire = ctx.accounts.acheteur.key();
-        item.en_vente = false;
-        
-        Ok(())
-    }
-
-    pub fn utiliser_item(ctx: Context<UtiliserItem>) -> Result<()> {
-        let item = &ctx.accounts.item;
-        let joueur = &mut ctx.accounts.joueur;
-        
-        if !joueur.vivant {
-            return Err(ErrorCode::JoueurMort.into());
-        }
-        
-        if item.proprietaire != ctx.accounts.authority.key() {
-            return Err(ErrorCode::NonProprietaire.into());
-        }
-        
-        joueur.xp += item.puissance as u64;
-        
         Ok(())
     }
 }
@@ -242,81 +171,21 @@ pub struct WithdrawVault<'info> {
 }
 
 #[derive(Accounts)]
-pub struct Attaquer<'info> {
-    #[account(mut, seeds = [b"joueur", authority.key().as_ref()], bump)]
-    pub attaquant: Account<'info, Joueur>,
-    
-    #[account(mut)]
-    pub cible: Account<'info, Joueur>,
-    
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct Soigner<'info> {
-    #[account(mut, seeds = [b"joueur", authority.key().as_ref()], bump)]
-    pub joueur: Account<'info, Joueur>,
-    
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-#[instruction(nom: String, puissance: u8, cout: u64)]
-pub struct CreerItem<'info> {
+pub struct Battle<'info> {
     #[account(
-        init,
-        payer = authority,
-        space = 8 + 4 + 50 + 1 + 8 + 32 + 1 
+        mut,
+        seeds = [b"joueur", attacker_owner.key().as_ref()],
+        bump
     )]
-    pub item: Account<'info, Item>,
-    
+    pub attacker: Account<'info, Joueur>,
     #[account(mut)]
-    pub authority: Signer<'info>,
+    pub attacker_owner: Signer<'info>,
     
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct GererVente<'info> {
-    #[account(mut)]
-    pub item: Account<'info, Item>,
-    
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct AcheterItem<'info> {
-    #[account(mut)]
-    pub item: Account<'info, Item>,
-    
-    #[account(mut)]
-    pub vendeur: UncheckedAccount<'info>,
-    
-    #[account(mut)]
-    pub acheteur: Signer<'info>,
-    
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct UtiliserItem<'info> {
-    #[account(mut)]
-    pub item: Account<'info, Item>,
-    
-    #[account(mut, seeds = [b"joueur", authority.key().as_ref()], bump)]
-    pub joueur: Account<'info, Joueur>,
-    
-    #[account(mut)]
-    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        constraint = attacker.key() != defender.key() @ ProgramError::InvalidArgument
+    )]
+    pub defender: Account<'info, Joueur>,
     
     pub system_program: Program<'info, System>,
 }
@@ -341,23 +210,12 @@ pub enum Level {
     Legend,
 }
 
-#[account]
-pub struct Item {
-    pub nom: String,
-    pub puissance: u8,
-    pub prix: u64,
-    pub proprietaire: Pubkey,
-    pub en_vente: bool,
-}
-
 #[error_code]
 pub enum ErrorCode {
     #[msg("Le joueur est mort")]
     JoueurMort,
     #[msg("Expérience insuffisante")]
     ExperienceInsuffisante,
-    #[msg("Vous n'êtes pas le propriétaire")]
-    NonProprietaire,
-    #[msg("L'item n'est pas en vente")]
-    ItemNonEnVente,
+    #[msg("Vous n'êtes pas autorisé à effectuer cette action")]
+    NonAdmin,
 }
